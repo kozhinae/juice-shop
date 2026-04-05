@@ -13,6 +13,7 @@ import { UserModel } from '../models/user'
 import * as models from '../models/index'
 import { type User } from '../data/types'
 import * as utils from '../lib/utils'
+import { Op } from 'sequelize' // Добавляем для безопасных операторов
 
 // vuln-code-snippet start loginAdminChallenge loginBenderChallenge loginJimChallenge
 export function login () {
@@ -31,28 +32,43 @@ export function login () {
 
   return (req: Request, res: Response, next: NextFunction) => {
     verifyPreLoginChallenges(req) // vuln-code-snippet hide-line
-    models.sequelize.query(`SELECT * FROM Users WHERE email = '${req.body.email || ''}' AND password = '${security.hash(req.body.password || '')}' AND deletedAt IS NULL`, { model: UserModel, plain: true }) // vuln-code-snippet vuln-line loginAdminChallenge loginBenderChallenge loginJimChallenge
-      .then((authenticatedUser) => { // vuln-code-snippet neutral-line loginAdminChallenge loginBenderChallenge loginJimChallenge
-        const user = utils.queryResultToJson(authenticatedUser)
-        if (user.data?.id && user.data.totpSecret !== '') {
-          res.status(401).json({
+    
+    const email = req.body.email || '';
+    const password = security.hash(req.body.password || '');
+    
+    UserModel.findOne({
+      where: {
+        email: email,
+        password: password,
+        deletedAt: null
+      },
+      attributes: { exclude: ['password'] } 
+    })
+      .then((user) => {
+        if (!user) {
+          return res.status(401).send(res.__('Invalid email or password.'));
+        }
+        
+        if (user.totpSecret && user.totpSecret !== '') {
+          return res.status(401).json({
             status: 'totp_token_required',
             data: {
               tmpToken: security.authorize({
-                userId: user.data.id,
+                userId: user.id,
                 type: 'password_valid_needs_second_factor_token'
               })
             }
-          })
-        } else if (user.data?.id) {
-          // @ts-expect-error FIXME some properties missing in user - vuln-code-snippet hide-line
-          afterLogin(user, res, next)
-        } else {
-          res.status(401).send(res.__('Invalid email or password.'))
+          });
         }
+        
+        // Успешная аутентификация
+        const authenticatedUser = { data: user, bid: null };
+        // @ts-expect-error FIXME some properties missing in user - vuln-code-snippet hide-line
+        afterLogin(authenticatedUser, res, next);
       }).catch((error: Error) => {
-        next(error)
-      })
+        console.error('Login error:', error);
+        next(error);
+      });
   }
   // vuln-code-snippet end loginAdminChallenge loginBenderChallenge loginJimChallenge
 
